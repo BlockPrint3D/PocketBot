@@ -1,89 +1,62 @@
-import websocket
-import json
+import telebot
+import time
+import datetime
 import numpy as np
 import talib
-import time
-import random
-import datetime
-import telebot
+from tvDatafeed import TvDatafeed, Interval
 
-# Telegram Bot Token
+# Telegram Bot Configuration
 TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"  # Replace with your chat ID or use bot.get_updates()
-
+CHAT_ID = "YOUR_CHAT_ID"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# Pocket Option WebSocket URL
-POCKET_OPTION_WS_URL = "wss://ws.pocketoption.com"
+# TradingView Data Configuration
+tv = TvDatafeed()
+SYMBOL = "EURUSD"  # Change to your desired currency pair
+EXCHANGE = "FXCM"  # Example: FXCM for Forex
+TIMEFRAME = Interval.in_5_minute  # Change to your preferred timeframe
 
-# Trading Parameters
-STOP_LOSS = 50  # Define stop loss amount
-BALANCE_PERCENTAGE = 2  # 2% of balance per trade
-MARTINGALE_MULTIPLIER = 2
+# Technical Indicator Settings
 RSI_PERIOD = 14
 MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
-TRADE_COOLDOWN = 5
-MAX_CONSECUTIVE_LOSSES = 3
-TRADING_HOURS = (9, 17)  # Trading between 9 AM and 5 PM
 
-# Initialize Variables
-trade_history = []
-current_balance = 1000  # Placeholder balance
-consecutive_losses = 0
+# Function to Get Market Data and Generate Signals
+def get_signal():
+    data = tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=TIMEFRAME, n_bars=100)
+    if data is None or data.empty:
+        return None
+    
+    close_prices = np.array(data['close'], dtype=np.float64)
+    
+    # Calculate RSI and MACD
+    rsi = talib.RSI(close_prices, RSI_PERIOD)[-1]
+    macd, signal, _ = talib.MACD(close_prices, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+    
+    direction = None
+    if rsi < 30 and macd[-1] > signal[-1]:
+        direction = "BUY"
+    elif rsi > 70 and macd[-1] < signal[-1]:
+        direction = "SELL"
+    
+    if direction:
+        return {
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "currency": SYMBOL,
+            "signal": direction,
+            "trade_timeframe": "5 minutes"
+        }
+    return None
 
-def send_signal(currency, direction, time_frame):
-    message = f"\u23F0 זמן: {datetime.datetime.now().strftime('%H:%M:%S')}\n\uD83D\uDCB1 מטבע: {currency}\n📈 עולה / 📉 יורד: {direction}\n⏳ מתי להיכנס: עכשיו\n🕒 תחום זמן: {time_frame} דקות"
+# Function to Send Signal to Telegram
+def send_signal(signal):
+    message = f"\n📅 Time: {signal['time']}\n💰 Currency Pair: {signal['currency']}\n📈 Signal: {signal['signal']}\n⏳ Trade Duration: {signal['trade_timeframe']}"
     bot.send_message(CHAT_ID, message)
 
-def on_message(ws, message):
-    global consecutive_losses
-    
-    data = json.loads(message)
-    price = data.get("price", None)
-    currency = data.get("currency", "Unknown")
-    
-    if not price:
-        return
-    
-    trade_history.append(price)
-    if len(trade_history) > 100:
-        trade_history.pop(0)
-    
-    prices = np.array(trade_history, dtype=np.float64)
-    rsi = talib.RSI(prices, RSI_PERIOD)[-1]
-    macd, signal, _ = talib.MACD(prices, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
-    
-    current_hour = datetime.datetime.now().hour
-    if current_hour < TRADING_HOURS[0] or current_hour > TRADING_HOURS[1]:
-        return
-    
-    if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-        return
-    
-    if rsi < 30 and macd[-1] > signal[-1]:
-        send_signal(currency, "📈 עולה", "5")
-    elif rsi > 70 and macd[-1] < signal[-1]:
-        send_signal(currency, "📉 יורד", "5")
-    
-    time.sleep(TRADE_COOLDOWN)
-
-def on_error(ws, error):
-    print(f"Error: {error}")
-
-def on_close(ws, close_status_code, close_msg):
-    print("WebSocket closed")
-
-def on_open(ws):
-    print("Connected to Pocket Option")
-    ws.send(json.dumps({"action": "subscribe", "channel": "price"}))
-
-ws = websocket.WebSocketApp(
-    POCKET_OPTION_WS_URL,
-    on_message=on_message,
-    on_error=on_error,
-    on_close=on_close
-)
-ws.on_open = on_open
-ws.run_forever()
+# Main Loop
+while True:
+    signal = get_signal()
+    if signal:
+        send_signal(signal)
+    time.sleep(300)  # Check every 5 minutes
